@@ -310,126 +310,175 @@
   }
 
   // ---------- PDF ----------
+  // jsPDF (Helvetica) ne gère pas bien les accents → on normalise le texte
+  function pdfSafe(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/[àáâãäå]/gi, 'a')
+      .replace(/[èéêë]/gi, 'e')
+      .replace(/[ìíîï]/gi, 'i')
+      .replace(/[òóôõö]/gi, 'o')
+      .replace(/[ùúûü]/gi, 'u')
+      .replace(/[ýÿ]/gi, 'y')
+      .replace(/[ç]/gi, 'c')
+      .replace(/[ñ]/gi, 'n')
+      .replace(/[°]/g, ' deg')
+      .replace(/[–—]/g, '-')
+      .replace(/[“”«»]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/[…]/g, '...')
+      .replace(/[^\x20-\x7E\n\r\t]/g, ''); // garde seulement ASCII imprimable
+  }
+
   function generatePdf() {
-    if (!currentMeta || !currentFile) return;
-
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const margin = 14;
-    let y = 18;
-
-    // En-tête
-    doc.setFontSize(18);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Rapport de Métadonnées Photo', pageWidth / 2, y, { align: 'center' });
-    y += 8;
-
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(100);
-    doc.text(`Généré le ${new Date().toLocaleString('fr-FR')}`, pageWidth / 2, y, { align: 'center' });
-    y += 6;
-    doc.text(`Fichier : ${currentFile.name}`, pageWidth / 2, y, { align: 'center' });
-    y += 5;
-    doc.text(`Taille : ${(currentFile.size / 1024).toFixed(1)} Ko`, pageWidth / 2, y, { align: 'center' });
-    y += 10;
-    doc.setTextColor(0);
-
-    // Ligne
-    doc.setDrawColor(37, 99, 235);
-    doc.setLineWidth(0.6);
-    doc.line(margin, y, pageWidth - margin, y);
-    y += 10;
-
-    // Groupes
-    GROUPS.forEach(group => {
-      const rows = [];
-      const lat = currentMeta.latitude ?? currentMeta.GPSLatitude;
-      const lon = currentMeta.longitude ?? currentMeta.GPSLongitude;
-
-      group.keys.forEach(([key, label]) => {
-        let value = currentMeta[key];
-        if (key === 'latitude' && lat != null) value = formatCoord(lat, true);
-        if (key === 'longitude' && lon != null) value = formatCoord(lon, false);
-        if (key === 'FNumber' && value != null) value = `f/${value}`;
-        if (key === 'ExposureTime' && value != null) {
-          value = value < 1 ? `1/${Math.round(1 / value)} s` : `${value} s`;
-        }
-        if ((key === 'FocalLength' || key === 'FocalLengthIn35mmFormat') && value != null) value = `${value} mm`;
-        if (key === 'GPSAltitude' && value != null) value = `${value} m`;
-
-        if (value !== undefined && value !== null && value !== '') {
-          rows.push([label, formatValue(value)]);
-        }
-      });
-
-      if (group.id === 'other') {
-        const knownKeys = new Set(GROUPS.flatMap(g => g.keys.map(k => k[0])));
-        Object.keys(currentMeta).forEach(k => {
-          if (!knownKeys.has(k) && !['thumbnail', 'Thumbnail', 'MakerNote'].includes(k)) {
-            const v = currentMeta[k];
-            if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') {
-              rows.push([k, formatValue(v)]);
-            }
-          }
-        });
-      }
-
-      if (rows.length === 0) return;
-
-      // Titre de section
-      if (y > 250) {
-        doc.addPage();
-        y = 18;
-      }
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(37, 99, 235);
-      doc.text(group.title.replace(/📷|⚙️|📅|📍|🖼️|ℹ️/g, '').trim(), margin, y);
-      y += 6;
-      doc.setTextColor(0);
-
-      doc.autoTable({
-        startY: y,
-        head: [['Champ', 'Valeur']],
-        body: rows,
-        margin: { left: margin, right: margin },
-        styles: { fontSize: 9, cellPadding: 2.5 },
-        headStyles: { fillColor: [37, 99, 235], textColor: 255 },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
-        columnStyles: {
-          0: { cellWidth: 60, fontStyle: 'bold' },
-          1: { cellWidth: 'auto' }
-        }
-      });
-
-      y = doc.lastAutoTable.finalY + 10;
-    });
-
-    // Pied de page
-    const pageCount = doc.internal.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.setFontSize(8);
-      doc.setTextColor(150);
-      doc.text(
-        `Page ${i} / ${pageCount}  •  Extracteur de Métadonnées Photo (100 % local)`,
-        pageWidth / 2,
-        doc.internal.pageSize.getHeight() - 12,
-        { align: 'center' }
-      );
-      doc.text(
-        'By Twagirumukiza  •  linkedin.com/in/innocent-twagirumukiza',
-        pageWidth / 2,
-        doc.internal.pageSize.getHeight() - 7,
-        { align: 'center' }
-      );
+    if (!currentMeta || !currentFile) {
+      alert('Aucune métadonnée à exporter. Chargez d\'abord une photo.');
+      return;
     }
 
-    // Téléchargement
-    const safeName = currentFile.name.replace(/\.[^/.]+$/, '') || 'photo';
-    doc.save(`rapport-metadonnees-${safeName}.pdf`);
+    try {
+      if (typeof window.jspdf === 'undefined') {
+        throw new Error('Bibliothèque PDF non chargée. Rechargez la page.');
+      }
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const margin = 14;
+      let y = 18;
+
+      // En-tête
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text(pdfSafe('Rapport de Metadonnees Photo'), pageWidth / 2, y, { align: 'center' });
+      y += 8;
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100);
+      doc.text(pdfSafe(`Genere le ${new Date().toLocaleString('fr-FR')}`), pageWidth / 2, y, { align: 'center' });
+      y += 6;
+      doc.text(pdfSafe(`Fichier : ${currentFile.name}`), pageWidth / 2, y, { align: 'center' });
+      y += 5;
+      doc.text(pdfSafe(`Taille : ${(currentFile.size / 1024).toFixed(1)} Ko`), pageWidth / 2, y, { align: 'center' });
+      y += 10;
+      doc.setTextColor(0);
+
+      // Ligne
+      doc.setDrawColor(37, 99, 235);
+      doc.setLineWidth(0.6);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 10;
+
+      // Groupes
+      GROUPS.forEach(group => {
+        const rows = [];
+        const lat = currentMeta.latitude ?? currentMeta.GPSLatitude;
+        const lon = currentMeta.longitude ?? currentMeta.GPSLongitude;
+
+        group.keys.forEach(([key, label]) => {
+          let value = currentMeta[key];
+          if (key === 'latitude' && lat != null) value = formatCoord(lat, true);
+          if (key === 'longitude' && lon != null) value = formatCoord(lon, false);
+          if (key === 'FNumber' && value != null) value = `f/${value}`;
+          if (key === 'ExposureTime' && value != null) {
+            value = value < 1 ? `1/${Math.round(1 / value)} s` : `${value} s`;
+          }
+          if ((key === 'FocalLength' || key === 'FocalLengthIn35mmFormat') && value != null) value = `${value} mm`;
+          if (key === 'GPSAltitude' && value != null) value = `${value} m`;
+
+          if (value !== undefined && value !== null && value !== '') {
+            rows.push([pdfSafe(label), pdfSafe(formatValue(value))]);
+          }
+        });
+
+        if (group.id === 'other') {
+          const knownKeys = new Set(GROUPS.flatMap(g => g.keys.map(k => k[0])));
+          Object.keys(currentMeta).forEach(k => {
+            if (!knownKeys.has(k) && !['thumbnail', 'Thumbnail', 'MakerNote'].includes(k)) {
+              const v = currentMeta[k];
+              if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') {
+                rows.push([pdfSafe(k), pdfSafe(formatValue(v))]);
+              }
+            }
+          });
+        }
+
+        if (rows.length === 0) return;
+
+        // Titre de section
+        if (y > 250) {
+          doc.addPage();
+          y = 18;
+        }
+        doc.setFontSize(12);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(37, 99, 235);
+        const sectionTitle = pdfSafe(group.title.replace(/📷|⚙️|📅|📍|🖼️|ℹ️/g, '').trim());
+        doc.text(sectionTitle, margin, y);
+        y += 6;
+        doc.setTextColor(0);
+
+        if (typeof doc.autoTable !== 'function') {
+          // Fallback sans autoTable
+          rows.forEach(([lab, val]) => {
+            if (y > 270) { doc.addPage(); y = 18; }
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.text(lab + ' :', margin, y);
+            doc.setFont('helvetica', 'normal');
+            const split = doc.splitTextToSize(val, pageWidth - margin * 2 - 55);
+            doc.text(split, margin + 55, y);
+            y += Math.max(6, split.length * 5);
+          });
+          y += 6;
+          return;
+        }
+
+        doc.autoTable({
+          startY: y,
+          head: [['Champ', 'Valeur']],
+          body: rows,
+          margin: { left: margin, right: margin },
+          styles: { fontSize: 9, cellPadding: 2.5, font: 'helvetica' },
+          headStyles: { fillColor: [37, 99, 235], textColor: 255 },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: {
+            0: { cellWidth: 60, fontStyle: 'bold' },
+            1: { cellWidth: 'auto' }
+          }
+        });
+
+        y = doc.lastAutoTable.finalY + 10;
+      });
+
+      // Pied de page
+      const pageCount = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150);
+        doc.text(
+          pdfSafe(`Page ${i} / ${pageCount}  -  Extracteur de Metadonnees Photo (100 % local)`),
+          pageWidth / 2,
+          doc.internal.pageSize.getHeight() - 12,
+          { align: 'center' }
+        );
+        doc.text(
+          'By Twagirumukiza  -  linkedin.com/in/innocent-twagirumukiza',
+          pageWidth / 2,
+          doc.internal.pageSize.getHeight() - 7,
+          { align: 'center' }
+        );
+      }
+
+      // Téléchargement
+      const safeName = (currentFile.name || 'photo').replace(/\.[^/.]+$/, '').replace(/[^\w\-]+/g, '_').substring(0, 40) || 'photo';
+      doc.save(`rapport-metadonnees-${safeName}.pdf`);
+    } catch (err) {
+      console.error('Erreur generation PDF:', err);
+      alert('Erreur lors de la generation du PDF :\n' + (err.message || err) + '\n\nOuvrez la console (F12) pour plus de details.');
+    }
   }
 
   // ---------- Gestion fichier ----------
