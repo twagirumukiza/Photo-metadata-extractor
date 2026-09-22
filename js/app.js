@@ -54,6 +54,74 @@
     return `${d}° ${m}' ${s}" ${dir} (${deg.toFixed(6)}°)`;
   }
 
+  // Noms lisibles pour les tags numériques EXIF/TIFF (évite d’afficher juste "256", "271"…)
+  const TAG_ID_NAMES = {
+    256: 'Largeur de l’image (pixels)',
+    257: 'Hauteur de l’image (pixels)',
+    258: 'Bits par échantillon',
+    259: 'Compression',
+    262: 'Interprétation photométrique',
+    270: 'Description de l’image',
+    271: 'Marque de l’appareil',
+    272: 'Modèle de l’appareil',
+    273: 'Offsets des bandes',
+    274: 'Orientation',
+    277: 'Échantillons par pixel',
+    278: 'Lignes par bande',
+    279: 'Octets par bande',
+    282: 'Résolution horizontale',
+    283: 'Résolution verticale',
+    296: 'Unité de résolution',
+    301: 'Courbe de transfert',
+    305: 'Logiciel',
+    306: 'Date/heure de modification',
+    315: 'Artiste',
+    33432: 'Copyright',
+    33434: 'Temps d’exposition',
+    33437: 'Ouverture (f-number)',
+    34850: 'Programme d’exposition',
+    34855: 'ISO',
+    36864: 'Version EXIF',
+    36867: 'Date de prise de vue originale',
+    36868: 'Date de numérisation',
+    37377: 'Vitesse d’obturation (APEX)',
+    37378: 'Ouverture (APEX)',
+    37379: 'Valeur de luminosité',
+    37380: 'Compensation d’exposition',
+    37381: 'Ouverture maximale',
+    37383: 'Mode de mesure',
+    37384: 'Source lumineuse',
+    37385: 'Flash',
+    37386: 'Focale (mm)',
+    37500: 'MakerNote (données constructeur)',
+    37510: 'Commentaire utilisateur',
+    40960: 'Version FlashPix',
+    40961: 'Espace colorimétrique',
+    40962: 'Largeur pixel (EXIF)',
+    40963: 'Hauteur pixel (EXIF)',
+    41728: 'Type de fichier',
+    41985: 'Rendu personnalisé',
+    41986: 'Mode d’exposition',
+    41987: 'Balance des blancs',
+    41988: 'Zoom numérique',
+    41989: 'Focale équivalente 35 mm',
+    41990: 'Type de scène',
+    41991: 'Gain de contrôle',
+    41992: 'Contraste',
+    41993: 'Saturation',
+    41994: 'Netteté',
+    42036: 'Modèle d’objectif',
+    42037: 'Numéro de série objectif'
+  };
+
+  function humanTagName(key) {
+    if (typeof key === 'number' || /^\d+$/.test(String(key))) {
+      const id = Number(key);
+      return TAG_ID_NAMES[id] || `Tag EXIF n° ${id}`;
+    }
+    return key;
+  }
+
   // Groupes de métadonnées (ordre + libellés français)
   const GROUPS = [
     {
@@ -198,8 +266,24 @@
     }
   }
 
+  // Reverse geocoding (OpenStreetMap Nominatim – gratuit, usage raisonnable)
+  async function reverseGeocode(lat, lon) {
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=14&addressdetails=1&accept-language=fr`;
+      const res = await fetch(url, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data;
+    } catch (e) {
+      console.warn('Géocodage inverse impossible:', e);
+      return null;
+    }
+  }
+
   // ---------- Affichage ----------
-  function renderMetadata(meta, file) {
+  async function renderMetadata(meta, file) {
     currentMeta = meta;
     metadataContainer.innerHTML = '';
 
@@ -209,8 +293,44 @@
 
     if (lat != null && lon != null) {
       mapWrapper.classList.remove('hidden');
-      gpsCoords.textContent = `Latitude : ${formatCoord(lat, true)}  •  Longitude : ${formatCoord(lon, false)}`;
+      gpsCoords.innerHTML = `
+        <strong>Coordonnées :</strong><br>
+        Latitude : ${formatCoord(lat, true)}<br>
+        Longitude : ${formatCoord(lon, false)}
+        <div id="geoExplanation" style="margin-top:0.75rem; padding:0.75rem; background:#eff6ff; border-radius:8px; font-size:0.9rem; color:#1e40af;">
+          Recherche de la situation géographique…
+        </div>
+      `;
       initMap(lat, lon);
+
+      // Explication textuelle de la situation géographique
+      reverseGeocode(lat, lon).then(geo => {
+        const el = document.getElementById('geoExplanation');
+        if (!el) return;
+        if (geo && geo.display_name) {
+          const addr = geo.address || {};
+          const parts = [];
+          if (addr.road || addr.pedestrian) parts.push(addr.road || addr.pedestrian);
+          if (addr.suburb || addr.neighbourhood || addr.quarter) parts.push(addr.suburb || addr.neighbourhood || addr.quarter);
+          if (addr.city || addr.town || addr.village || addr.municipality) parts.push(addr.city || addr.town || addr.village || addr.municipality);
+          if (addr.state || addr.region) parts.push(addr.state || addr.region);
+          if (addr.country) parts.push(addr.country);
+
+          const shortPlace = parts.filter(Boolean).join(', ') || geo.display_name;
+          el.innerHTML = `
+            <strong>📍 Situation géographique :</strong><br>
+            Cette photo a très probablement été prise à proximité de :<br>
+            <em>${escapeHtml(shortPlace)}</em><br>
+            <span style="font-size:0.85em; opacity:0.85;">(${escapeHtml(geo.display_name)})</span>
+          `;
+        } else {
+          el.innerHTML = `
+            <strong>📍 Situation géographique :</strong><br>
+            Coordonnées GPS détectées (${lat.toFixed(5)}, ${lon.toFixed(5)}).<br>
+            Impossible de déterminer le lieu exact pour le moment.
+          `;
+        }
+      });
     } else {
       mapWrapper.classList.add('hidden');
       if (mapInstance) {
@@ -244,14 +364,14 @@
         }
       });
 
-      // Ajouter aussi les clés non listées qui commencent par le préfixe du groupe (pour maximiser)
+      // Ajouter les clés non listées avec noms lisibles
       if (group.id === 'other') {
         const knownKeys = new Set(GROUPS.flatMap(g => g.keys.map(k => k[0])));
         Object.keys(meta).forEach(k => {
           if (!knownKeys.has(k) && !['thumbnail', 'Thumbnail', 'MakerNote'].includes(k)) {
             const v = meta[k];
             if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') {
-              rows.push({ label: k, value: formatValue(v) });
+              rows.push({ label: humanTagName(k), value: formatValue(v) });
             }
           }
         });
@@ -398,7 +518,7 @@
             if (!knownKeys.has(k) && !['thumbnail', 'Thumbnail', 'MakerNote'].includes(k)) {
               const v = currentMeta[k];
               if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') {
-                rows.push([pdfSafe(k), pdfSafe(formatValue(v))]);
+                rows.push([pdfSafe(humanTagName(k)), pdfSafe(formatValue(v))]);
               }
             }
           });
@@ -472,23 +592,48 @@
         );
       }
 
-      // Téléchargement
+      // Téléchargement (méthode plus fiable que doc.save())
       const safeName = (currentFile.name || 'photo').replace(/\.[^/.]+$/, '').replace(/[^\w\-]+/g, '_').substring(0, 40) || 'photo';
-      doc.save(`rapport-metadonnees-${safeName}.pdf`);
+      const fileName = `rapport-metadonnees-${safeName}.pdf`;
+
+      // Méthode 1 : blob + lien (meilleure compatibilité)
+      const blob = doc.output('blob');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 200);
+
+      // Feedback visuel
+      const originalText = btnDownloadPdf.innerHTML;
+      btnDownloadPdf.innerHTML = '✅ PDF téléchargé !';
+      btnDownloadPdf.disabled = true;
+      setTimeout(() => {
+        btnDownloadPdf.innerHTML = originalText;
+        btnDownloadPdf.disabled = false;
+      }, 2500);
+
     } catch (err) {
       console.error('Erreur generation PDF:', err);
-      alert('Erreur lors de la generation du PDF :\n' + (err.message || err) + '\n\nOuvrez la console (F12) pour plus de details.');
+      alert('Erreur lors de la generation du PDF :\n\n' + (err.message || err) + '\n\nOuvrez la console (F12 → Console) et copiez le message d\'erreur.');
     }
   }
 
   // ---------- Gestion fichier ----------
   async function handleFile(file) {
-    if (!file || !file.type.startsWith('image/') && !/\.(heic|heif|tiff?|dng|cr2|nef|arw|raf|orf|rw2)$/i.test(file.name)) {
-      alert('Veuillez sélectionner un fichier image valide.');
+    if (!file || (!file.type.startsWith('image/') && !/\.(heic|heif|tiff?|dng|cr2|nef|arw|raf|orf|rw2)$/i.test(file.name))) {
+      alert('Veuillez sélectionner un fichier image valide (JPEG, PNG, HEIC, TIFF, RAW…).');
       return;
     }
 
     currentFile = file;
+    currentMeta = null;
 
     // Aperçu
     const url = URL.createObjectURL(file);
@@ -499,11 +644,22 @@
     dropZone.classList.add('hidden');
     previewSection.classList.remove('hidden');
     btnDownloadPdf.disabled = true;
+    btnDownloadPdf.innerHTML = '📄 Télécharger le rapport PDF';
     metadataContainer.innerHTML = '<div class="meta-card empty-state"><p>Extraction des métadonnées en cours…</p></div>';
 
-    // Extraction
-    const meta = await extractMetadata(file);
-    renderMetadata(meta, file);
+    try {
+      const meta = await extractMetadata(file);
+      await renderMetadata(meta || {}, file);
+    } catch (err) {
+      console.error('Erreur extraction:', err);
+      currentMeta = {};
+      metadataContainer.innerHTML = `
+        <div class="meta-card empty-state">
+          <p>Impossible d’extraire les métadonnées de ce fichier.<br>
+          Vous pouvez quand même générer un rapport minimal.</p>
+        </div>`;
+      btnDownloadPdf.disabled = false;
+    }
   }
 
   function reset() {
@@ -539,6 +695,12 @@
     if (fileInput.files.length) handleFile(fileInput.files[0]);
   });
 
-  btnDownloadPdf.addEventListener('click', generatePdf);
+  btnDownloadPdf.addEventListener('click', function (e) {
+    e.preventDefault();
+    console.log('Clic sur Télécharger PDF – currentFile:', !!currentFile, 'currentMeta:', !!currentMeta);
+    generatePdf();
+  });
   btnReset.addEventListener('click', reset);
+
+  console.log('Extracteur de Métadonnées Photo chargé – By Twagirumukiza');
 })();
